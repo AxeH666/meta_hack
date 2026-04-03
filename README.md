@@ -1,6 +1,6 @@
 ---
 title: meta_RL_mod
-emoji: robot
+emoji: 🤖
 colorFrom: blue
 colorTo: indigo
 sdk: docker
