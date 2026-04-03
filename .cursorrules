@@ -1,0 +1,139 @@
+# ModGuard-RL — Cursor Rules
+# Spec v1.5.0 is LOCKED. These rules are absolute.
+
+## IDENTITY
+You are implementing a real-world RL environment for a competitive hackathon.
+The spec is mathematically verified and frozen. Your job is precise implementation,
+not design. Never suggest changing spec decisions. If something seems wrong, say so
+and wait for confirmation before touching anything.
+
+## CRITICAL — NEVER DO THESE
+- Never use global random, random.random(), random.choice(), or any random call
+  outside of self.rng. ALL randomness uses self.rng = random.Random(seed) exclusively.
+- Never add fields to ModGuardObservation, ModGuardAction, or ModGuardState that
+  are not in the spec.
+- Never change enum values in ContentCategory, RiskLevel, PlatformContext,
+  ActionType, GTLabel, or Stage.
+- Never modify the grade formula weights: correctness×0.45, process×0.25,
+  hint×0.20, speed×0.10. These are locked.
+- Never modify the correctness table values.
+- Never let path_penalty_incurred reset to False once it is True within an episode.
+- Never place the Dockerfile inside server/. It belongs at project root only.
+- Never import openai or use the OpenAI API key. Only HF token + HF router.
+- Never add an LLM call inside environment.py. The environment is fully deterministic.
+- Never use wildcard imports (from x import *) in any file.
+
+## SPEC — LOCKED VALUES (do not compute, do not infer, copy exactly)
+
+### Grade formula
+grade = correctness×0.45 + process×0.25 + hint×0.20 + speed×0.10
+
+### Correctness table [GT][terminal_action]
+             approve  remove  escalate  legal_hold
+approve       1.0     0.5     0.1       0.0
+remove        0.5     1.0     0.3       0.1
+legal_hold    0.0     0.1     0.5       1.0
+
+### Process score
+budget_violated=True → 0.0 (return immediately)
+diff=0 → 1.0 | diff=1 → 0.6 | diff=2 → 0.2
+path_penalty_incurred=True → min(score, 0.4)
+
+### Optimal steps
+GT=approve      any risk     → 1
+GT=remove       any risk     → 1
+GT=legal_hold   non-critical → 1
+GT=legal_hold   critical     → 3
+
+### Speed score
+steps=1 → 1.0 | steps=2 → 0.6 | steps=3 → 0.2
+
+### Hint score
+hint=None                                    → 0.5
+hint==terminal_action AND hint==GT           → 0.8
+hint==terminal_action AND hint!=GT           → 0.0
+hint!=terminal_action AND hint==GT           → 0.3
+hint!=terminal_action AND hint!=GT           → 1.0
+
+### ai_confidence_score
+base = rng.uniform(0.7, 1.0)
+easy:   score = base
+medium: score = clamp(base + rng.uniform(-0.2, 0.2), 0.0, 1.0)
+hard:   score = 1.0 - base  ← always, no probability split
+
+### human_reviewer_hint
+hard:   always None
+easy:   always ActionType(ground_truth.value)
+medium: correct with prob 0.6, else random wrong ActionType
+
+## PATH PENALTY — 5 TRIGGERS (sticky, never resets)
+TRIGGER 1: stage=escalation_review, action=escalate → set True, TERMINAL
+TRIGGER 2: stage=escalation_review, action=legal_hold, risk!=critical, GT!=legal_hold → set True, TERMINAL
+TRIGGER 3: stage=legal_review, action=escalate → set True, TERMINAL
+TRIGGER 4: stage=legal_review, action=legal_hold, GT!=legal_hold → set True, TERMINAL
+TRIGGER 5: entering step 3, action_history[0]==legal_hold → set True immediately on entry
+
+## BUDGET VIOLATION GUARD
+Check before any decrement:
+  if action == escalate AND escalation_budget == 0:
+      budget_violated = True
+      # do NOT decrement further — budget stays at 0
+
+## OBSERVATION UPDATE BETWEEN STEPS
+Only these three fields change between steps:
+  - step_number (increment)
+  - stage (per state machine)
+  - reviewer_overturn_rate (resample: clamp(rng.uniform(0,1) + rng.uniform(-0.15,0.15), 0.0, 1.0))
+All other fields are identical to the reset observation. Never resample them.
+reviewer_overturn_rate is always None at step 1. Always non-None at step 2+.
+
+## REWARD POLICY
+non-terminal: reward=0.0, done=False
+terminal:     reward=grade(), done=True
+Step penalties are NOT subtracted from reward. They affect process_score only.
+
+## FILE STRUCTURE — EXACT, DO NOT CHANGE
+modguard_rl/
+├── Dockerfile          ← ROOT level, never inside server/
+├── openenv.yaml
+├── pyproject.toml
+├── inference.py
+├── README.md
+├── server/
+│   ├── app.py
+│   ├── environment.py
+│   └── models.py
+└── client/
+    └── client.py
+
+## DOCKERFILE REQUIREMENTS
+ENV ENABLE_WEB_INTERFACE=true must be present.
+Dockerfile must be at project root.
+
+## INFERENCE SCRIPT REQUIREMENTS
+Must use HF router base URL, not api.openai.com.
+API key loaded from HF_TOKEN environment variable only.
+Model: Qwen/Qwen2.5-72B-Instruct (or similar via HF router).
+Must run end-to-end with: uv run inference.py
+Reward values logged per episode — must show diversity across runs.
+
+## CODE QUALITY RULES
+- Type hints on every function signature.
+- No bare except clauses.
+- No print debugging left in final files.
+- Every method that touches state must be called only after reset().
+- _grade() and _process_score() are private methods, never called externally.
+- get_state() returns a copy or the live ModGuardState — never None.
+
+## WHEN GENERATING CODE
+1. Read the relevant existing file first before writing or editing.
+2. Write complete files — no "rest remains the same" placeholders.
+3. After writing, state explicitly which spec rules each section satisfies.
+4. If a test fails, paste the full traceback before attempting a fix.
+5. Never fix a bug by relaxing a spec constraint.
+
+## KNOWN BUGS TO FIX (from audit)
+1. escalation_budget underflow: when budget_violated=True, do not decrement
+   escalation_budget. Add guard before the decrement line.
+2. hard mode ai_confidence_score: remove the 70/30 probability split.
+   Use pure inversion: score = 1.0 - base, always.

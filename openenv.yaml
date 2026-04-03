@@ -1,0 +1,17 @@
+name: modguard-rl
+version: 1.0.0
+description: >
+  A synthetic content-policy triage simulator where an agent reviews
+  flagged content and chooses to approve, remove, escalate, or
+  issue a legal hold. Episodes branch across 1–3 steps with
+  difficulty-adaptive observations and a four-component reward signal.
+entry_point: server.app:app
+action_schema: server.models.ModGuardAction
+observation_schema: server.models.ModGuardObservation
+state_schema: server.models.ModGuardState
+port: 8000
+tags:
+  - content-moderation
+  - multi-step
+  - real-world
+  - trust-and-safety

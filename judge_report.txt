@@ -1,0 +1,80 @@
+[D1] Real-world utility (30%)
+  ✓ C1: README contains 'content moderation' or 'content policy' (case-insensitive)
+  ✓ C2: README contains none of 'game', 'toy', 'puzzle' (case-insensitive)
+  ✓ C3: server/environment.py contains approve, remove, and legal_hold
+  ✓ C4: README contains enterprise/trust/safety/triage keyword (case-insensitive)
+  Score: 10.0 / 10  Weighted: 3.00 pts
+
+[D2] Task & grader quality (25%)
+  ✓ C1: All terminal rewards in [0.0, 1.0]
+  ✓ C2: At least 5 distinct rounded reward values across 200 episodes
+  ✓ C3: statistics.variance(rewards) > 0.01
+  ✓ C4: max(rewards) - min(rewards) > 0.3
+  ✓ C5: At least one reward >= 0.8
+  ✓ C6: At least one reward <= 0.3
+  Reward stats: min=0.13 max=1.00 mean=0.60 var=0.06 distinct=39
+  Score: 10.0 / 10  Weighted: 2.50 pts
+
+[D3] Environment design (20%)
+  ✓ C1: reset(seed=99) twice matches 8 specified fields
+  ✓ C2: reset() returns step_number=1, stage=initial_review, done=False
+  ✓ C3: First non-terminal transition returns reward=0.0 and done=False
+  ✓ C4: Terminal step returns done=True and reward in [0.0, 1.0]
+  ✓ C5: ModGuardObservation.model_fields includes all 10 spec fields
+  ✓ C6: ActionType values exactly match approve/remove/escalate/legal_hold
+  ✓ C7: 500-episode batch: no episode exceeds 3 actions in action_history
+  ✓ C8: 500-episode batch: at least 20% of episodes have steps > 1
+  Score: 10.0 / 10  Weighted: 2.00 pts
+
+[D4] Code quality & compliance (15%)
+  ✓ C1: PROJECT_ROOT/Dockerfile exists
+  ✓ C2: PROJECT_ROOT/openenv.yaml exists
+  ✓ C3: PROJECT_ROOT/inference.py exists
+  ✓ C4: PROJECT_ROOT/server/__init__.py exists
+  ✓ C5: PROJECT_ROOT/client/__init__.py exists
+  ✓ C6: PROJECT_ROOT/client/client.py exists
+  ✓ C7: PROJECT_ROOT/README.md exists
+  ✓ C8: Dockerfile contains ENABLE_WEB_INTERFACE=true
+  ✓ C9: server/Dockerfile does not exist
+  ✓ C10: inference.py contains [START]
+  ✓ C11: inference.py contains [STEP]
+  ✓ C12: inference.py contains [END]
+  ✓ C13: inference.py contains API_BASE_URL
+  ✓ C14: inference.py contains MODEL_NAME
+  ✓ C15: inference.py contains HF_TOKEN
+  ✓ C16: inference.py contains load_dotenv
+  ✓ C17: inference.py contains router.huggingface.co
+  ✓ C18: inference.py does not contain api.openai.com
+  ✓ C19: inference.py contains NUM_EPISODES
+  ✓ C20: openenv.yaml contains entry_point
+  ✓ C21: server/environment.py does not use wildcard import from server.models
+  ✓ C22: openenv.yaml contains action_schema or observation_schema
+  Score: 10.0 / 10  Weighted: 1.50 pts
+
+[D5] Creativity & novelty (10%)
+  ✓ C1: server/environment.py contains grade weights 0.45, 0.25, 0.20, 0.10
+  ✓ C2: server/environment.py contains path_penalty_incurred
+  ✓ C3: server/environment.py contains escalation_review and legal_review
+  ✓ C4: server/environment.py contains adversarial confidence inversion '1.0 - base'
+  ✓ C5: At least 4/5 path-penalty trigger token groups found within 300-char windows
+  Score: 10.0 / 10  Weighted: 1.00 pts
+
+[CHECKLIST] Pre-submission gates
+  ✓ P1: Dockerfile at project root
+  ✓ P2: inference.py at project root
+  ✓ P3: [START] log format correct
+  ✗ P4: [STEP] log format correct — FAIL: STEP pattern not found
+  ✗ P5: [END] log format correct — FAIL: END pattern not found
+  ✓ P6: SUCCESS_SCORE_THRESHOLD defined
+  ✓ P7: MAX_STEPS <= 3
+  ✓ P8: NUM_EPISODES defined
+  ✓ P9: No GPU dependencies (torch/tensorflow imports)
+  ✓ P10: Deterministic RNG (self.rng) present in environment.py
+  Gates passed: 8/10
+
+[SCORE] Final
+  FINAL SCORE: 10.00 / 10
+
+GAPS:
+  - CHECKLIST P4: STEP pattern not found
+  - CHECKLIST P5: END pattern not found
