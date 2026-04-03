@@ -1,5 +1,6 @@
-import random
 import math
+import random
+from typing import Optional
 from server.models import (
     ContentCategory,
     RiskLevel,
@@ -19,7 +20,7 @@ Environment = __import__("openenv.core", fromlist=["Environment"]).Environment
 
 
 class ModGuardEnvironment(Environment):
-    def __init__(self, seed: int = None):
+    def __init__(self, seed: Optional[int] = None):
         self.rng = random.Random(seed)
         self._state = None
         self._reset_observation = None
@@ -30,10 +31,14 @@ class ModGuardEnvironment(Environment):
     def state(self) -> ModGuardState:
         return self._state
 
+    @state.setter
+    def state(self, value: ModGuardState) -> None:
+        self._state = value
+
     def _clamp(self, value: float, low: float = 0.0, high: float = 1.0) -> float:
         return max(low, min(high, value))
 
-    def reset(self, seed: int = None) -> ModGuardObservation:
+    def reset(self, seed: Optional[int] = None) -> ModGuardObservation:
         self.rng = random.Random(seed)
         self._last_overturn = None
 
@@ -156,10 +161,10 @@ class ModGuardEnvironment(Environment):
                     self._state.stage = Stage.legal_review
                     self._state.step_number += 1
                     if (
-                        len(self.state.action_history) > 0
-                        and self.state.action_history[0] == ActionType.legal_hold
+                        len(self._state.action_history) > 0
+                        and self._state.action_history[0] == ActionType.legal_hold
                     ):
-                        self.state.path_penalty_incurred = True
+                        self._state.path_penalty_incurred = True
                 elif self._state.ground_truth == GTLabel.legal_hold:
                     terminal = True
                 else:
@@ -179,10 +184,10 @@ class ModGuardEnvironment(Environment):
                     self._state.stage = Stage.legal_review
                     self._state.step_number += 1
                     if (
-                        len(self.state.action_history) > 0
-                        and self.state.action_history[0] == ActionType.legal_hold
+                        len(self._state.action_history) > 0
+                        and self._state.action_history[0] == ActionType.legal_hold
                     ):
-                        self.state.path_penalty_incurred = True
+                        self._state.path_penalty_incurred = True
                 elif self._state.ground_truth == GTLabel.legal_hold:
                     terminal = True
                 else:

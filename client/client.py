@@ -53,7 +53,16 @@ class ModGuardClient:
         return self._to_observation(result.observation)
 
     def get_state(self) -> ModGuardState:
-        return ModGuardState.model_validate(self._require_client().state().__dict__)
+        payload = self._require_client().state()
+        if isinstance(payload, ModGuardState):
+            return payload
+        if isinstance(payload, dict):
+            return ModGuardState.model_validate(payload)
+        if hasattr(payload, "model_dump"):
+            return ModGuardState.model_validate(payload.model_dump())
+        if hasattr(payload, "__dict__"):
+            return ModGuardState.model_validate(payload.__dict__)
+        return ModGuardState.model_validate(payload)
 
 
 if __name__ == "__main__":

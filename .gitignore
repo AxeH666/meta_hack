@@ -9,3 +9,4 @@ dist/
 build/
 .pytest_cache/
 judge_resources/
+judge_report.txt
