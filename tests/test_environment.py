@@ -1,10 +1,8 @@
 import random
 import statistics
 
-import pytest
-
 from server.environment import ModGuardEnvironment
-from server.models import ActionType, DifficultyLevel, GTLabel, RiskLevel
+from server.models import ActionType, GTLabel, ModGuardAction, RiskLevel, Stage
 
 
 def _env(seed: int = 123) -> ModGuardEnvironment:
@@ -13,166 +11,132 @@ def _env(seed: int = 123) -> ModGuardEnvironment:
     return env
 
 
-def _set_gt_and_risk(env: ModGuardEnvironment, gt: GTLabel, risk: RiskLevel) -> None:
-    env.state.ground_truth = gt
-    env._reset_observation = env._reset_observation.model_copy(update={"risk_level": risk})
-
-
-def _run_random_episode(seed: int, chooser: random.Random) -> float:
-    env = ModGuardEnvironment()
-    obs = env.reset(seed=seed)
-    while not obs.done:
-        obs = env.step(ActionType(chooser.choice(list(ActionType)).value))
-    return float(obs.reward if obs.reward is not None else 0.0)
-
-
-def test_01_reset_returns_clean_observation_with_10_fields() -> None:
+def test_reset_returns_clean_observation_with_metadata() -> None:
     env = _env(1)
-    obs = env._reset_observation
-    fields = {
-        "content_category",
-        "risk_level",
-        "platform_context",
-        "ai_confidence_score",
-        "human_reviewer_hint",
-        "queue_pressure",
-        "reviewer_overturn_rate",
-        "step_number",
-        "case_history",
-        "stage",
-    }
-    assert fields.issubset(set(obs.model_dump().keys()))
+    obs = env.get_state()
     assert obs.step_number == 1
-    assert obs.reviewer_overturn_rate is None
-    assert obs.done is False
-    assert obs.reward == 0.0
+    reset_obs = env.reset(seed=1)
+    assert reset_obs.step_number == 1
+    assert reset_obs.reviewer_overturn_rate is None
+    assert reset_obs.done is False
+    assert reset_obs.reward == 0.0
+    assert "ai_recommendation" in reset_obs.metadata
+    assert "uncertainty_index" in reset_obs.metadata
 
 
-def test_02_non_terminal_step_reward_is_zero() -> None:
+def test_public_state_does_not_expose_ground_truth() -> None:
     env = _env(2)
+    state = env.get_state()
+    dumped = state.model_dump()
+    assert "ground_truth" not in dumped
+    assert dumped["episode_id"]
+
+
+def test_initial_escalation_advances_to_step_two() -> None:
+    env = _env(3)
+    env.state.escalation_budget = 1
     obs = env.step(ActionType.escalate)
     assert obs.done is False
-    assert obs.reward == 0.0
+    assert obs.step_number == 2
+    assert obs.stage == Stage.escalation_review
 
 
-def test_03_terminal_step_reward_is_positive() -> None:
-    env = _env(3)
-    env.state.ground_truth = GTLabel.approve
+def test_zero_budget_escalation_triggers_penalty_and_audit() -> None:
+    env = _env(4)
+    env.state.escalation_budget = 0
+    env.state.starting_escalation_budget = 0
+    obs = env.step(ActionType.escalate)
+    assert env.state.budget_violated is True
+    assert env.state.path_penalty_incurred is True
+    assert env.state.repeated_escalations >= 1
+    assert obs.done is False
+    assert obs.stage == Stage.post_decision_audit
+
+
+def test_post_decision_audit_can_be_entered_from_initial_review() -> None:
+    env = _env(5)
+    env._case["audit_required"] = True
+    env._case["audit_reasons"] = ["conflicting_signals"]
+    env.state.audit_required = True
+    obs = env.step(ActionType.approve)
+    assert obs.done is False
+    assert obs.stage == Stage.post_decision_audit
+    assert obs.step_number == 2
+
+
+def test_four_step_trajectory_is_possible() -> None:
+    env = _env(6)
+    env._case["ground_truth"] = GTLabel.legal_hold
+    env._case["gt_action"] = ActionType.legal_hold
+    env._case["risk_level"] = RiskLevel.critical
+    env._case["audit_required"] = True
+    env._case["audit_reasons"] = ["possible_legal_retention"]
+    env._case["delayed_legal"] = True
+    env.state.audit_required = True
+    env.state.escalation_budget = 1
+    env.state.starting_escalation_budget = 1
+
+    obs = env.step(ActionType.escalate)
+    assert obs.stage == Stage.escalation_review
+    obs = env.step(ActionType.legal_hold)
+    assert obs.stage == Stage.legal_review
+    obs = env.step(ActionType.legal_hold)
+    assert obs.stage == Stage.post_decision_audit
+    assert obs.step_number == 4
+    obs = env.step(ActionType.legal_hold)
+    assert obs.done is True
+    assert obs.step_number == 4
+
+
+def test_terminal_reward_contains_breakdown_and_is_bounded() -> None:
+    env = _env(7)
+    env._case["ground_truth"] = GTLabel.approve
+    env._case["gt_action"] = ActionType.approve
     obs = env.step(ActionType.approve)
     assert obs.done is True
-    assert float(obs.reward) > 0.0
+    assert 0.0 <= float(obs.reward) <= 1.0
+    breakdown = obs.metadata["reward_breakdown"]
+    assert "correctness" in breakdown
+    assert "consistency" in breakdown
+    assert "uncertainty_awareness" in breakdown
+    assert "overconfidence_penalty" in breakdown
 
 
-def test_04_grade_formula_example_a_is_0_96() -> None:
-    env = _env(4)
-    env.state.ground_truth = GTLabel.approve
-    env.state.step_number = 1
-    env.state.path_penalty_incurred = False
-    env.state.budget_violated = False
-    env._initial_hint = ActionType.approve
-    grade = env._grade(ActionType.approve)
-    assert grade == pytest.approx(0.96, abs=1e-9)
-
-
-def test_05_budget_violated_forces_process_score_zero() -> None:
-    env = _env(5)
-    env.state.budget_violated = True
-    assert env._process_score() == 0.0
-
-
-def test_06_trigger_1_escalation_review_escalate_sets_path_penalty() -> None:
-    env = _env(6)
-    env.step(ActionType.escalate)
-    env.step(ActionType.escalate)
-    assert env.state.path_penalty_incurred is True
-
-
-def test_07_trigger_2_escalation_review_legal_hold_non_critical_wrong_gt() -> None:
-    env = _env(7)
-    _set_gt_and_risk(env, GTLabel.remove, RiskLevel.high)
-    env.step(ActionType.escalate)
-    env.step(ActionType.legal_hold)
-    assert env.state.path_penalty_incurred is True
-
-
-def test_08_trigger_3_legal_review_escalate_sets_path_penalty() -> None:
+def test_overconfidence_penalty_is_positive_for_blind_wrong_high_confidence() -> None:
     env = _env(8)
-    env.step(ActionType.legal_hold)
-    env.step(ActionType.escalate)
-    assert env.state.path_penalty_incurred is True
+    env._case["ground_truth"] = GTLabel.remove
+    env._case["gt_action"] = ActionType.remove
+    env._case["ai_action"] = ActionType.approve
+    env._case["ai_confidence_score"] = 0.98
+    env._case["signal_conflict_score"] = 0.92
+    env._case["uncertainty_index"] = 0.89
+    env._case["misleading_ai"] = True
+    env.state.action_history = [ActionType.approve]
+    env.state.step_number = 1
+    penalty = env._overconfidence_penalty(ActionType.approve)
+    assert penalty > 0.0
 
 
-def test_09_trigger_4_legal_review_legal_hold_wrong_gt_sets_path_penalty() -> None:
-    env = _env(9)
-    _set_gt_and_risk(env, GTLabel.remove, RiskLevel.medium)
-    env.step(ActionType.legal_hold)
-    env.step(ActionType.legal_hold)
-    assert env.state.path_penalty_incurred is True
-
-
-def test_10_escalation_budget_never_below_zero() -> None:
-    env = _env(10)
-    env.state.escalation_budget = 0
-    env.step(ActionType.escalate)
-    assert env.state.escalation_budget == 0
-    assert env.state.budget_violated is True
-
-
-def test_11_path_penalty_is_sticky() -> None:
-    env = _env(11)
-    _set_gt_and_risk(env, GTLabel.legal_hold, RiskLevel.critical)
-    env.step(ActionType.legal_hold)
-    obs = env.step(ActionType.legal_hold)
-    assert obs.done is False
-    assert env.state.path_penalty_incurred is True
-    env.step(ActionType.approve)
-    assert env.state.path_penalty_incurred is True
-
-
-def test_12_reviewer_overturn_rate_none_step1_non_none_step2_plus() -> None:
-    env = _env(12)
-    first = env._reset_observation
-    second = env.step(ActionType.escalate)
-    assert first.reviewer_overturn_rate is None
-    assert second.reviewer_overturn_rate is not None
-
-
-def test_13_hard_mode_hint_always_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_choice = random.Random.choice
-
-    def _patched_choice(rng: random.Random, seq):  # type: ignore[no-untyped-def]
-        if seq and isinstance(seq[0], DifficultyLevel):
-            return DifficultyLevel.hard
-        return original_choice(rng, seq)
-
-    monkeypatch.setattr(random.Random, "choice", _patched_choice)
-    env = ModGuardEnvironment()
-    obs = env.reset(seed=13)
-    assert obs.human_reviewer_hint is None
-
-
-def test_14_easy_mode_hint_matches_ground_truth(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_choice = random.Random.choice
-
-    def _patched_choice(rng: random.Random, seq):  # type: ignore[no-untyped-def]
-        if seq and isinstance(seq[0], DifficultyLevel):
-            return DifficultyLevel.easy
-        return original_choice(rng, seq)
-
-    monkeypatch.setattr(random.Random, "choice", _patched_choice)
-    env = ModGuardEnvironment()
-    obs = env.reset(seed=14)
-    expected = ActionType(env.state.ground_truth.value)
-    assert obs.human_reviewer_hint == expected
-
-
-def test_15_reward_diversity_over_20_random_episodes() -> None:
+def test_rewards_have_variance_over_random_rollouts() -> None:
     chooser = random.Random(42)
-    rewards = [_run_random_episode(seed, chooser) for seed in range(100, 120)]
-    assert statistics.pstdev(rewards) > 0.0
+    rewards = []
+    for seed in range(100, 140):
+        env = ModGuardEnvironment()
+        obs = env.reset(seed=seed)
+        while not obs.done:
+            obs = env.step(ModGuardAction(action=chooser.choice(list(ActionType))))
+        rewards.append(float(obs.reward or 0.0))
+    assert statistics.pstdev(rewards) > 0.01
+    assert all(0.0 <= reward <= 1.0 for reward in rewards)
 
 
-def test_16_rewards_in_range_over_20_random_episodes() -> None:
-    chooser = random.Random(43)
-    rewards = [_run_random_episode(seed, chooser) for seed in range(200, 220)]
-    assert all(0.0 <= r <= 1.0 for r in rewards)
+def test_state_metadata_tracks_steps_and_actions() -> None:
+    env = ModGuardEnvironment()
+    env.reset(seed=99)
+    s0 = env.get_state()
+    assert s0.step_count == 0
+    assert s0.action_history == []
+    env.step(ModGuardAction(action=ActionType.approve))
+    s1 = env.get_state()
+    assert s1.step_count == 1
+    assert s1.action_history == [ActionType.approve]

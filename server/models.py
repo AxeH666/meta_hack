@@ -1,13 +1,15 @@
 """
 ModGuard-RL — server/models.py
-Spec version: 1.5.0  (LOCKED)
+Spec version: 2.0.0
 """
 
 from __future__ import annotations
+
 from enum import Enum
 from typing import List, Optional
+
 from openenv.core import Action, Observation, State
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ContentCategory(str, Enum):
@@ -55,9 +57,10 @@ class Stage(str, Enum):
     initial_review = "initial_review"
     escalation_review = "escalation_review"
     legal_review = "legal_review"
+    post_decision_audit = "post_decision_audit"
 
 
-class CaseHistory(Observation):
+class CaseHistory(BaseModel):
     prior_escalations: int = Field(..., ge=0)
     account_risk: float = Field(..., ge=0.0, le=1.0)
 
@@ -70,19 +73,21 @@ class ModGuardObservation(Observation):
     human_reviewer_hint: Optional[ActionType] = Field(default=None)
     queue_pressure: int = Field(..., ge=1, le=5)
     reviewer_overturn_rate: Optional[float] = Field(default=None)
-    step_number: int = Field(..., ge=1, le=3)
+    step_number: int = Field(..., ge=1, le=4)
     case_history: CaseHistory = Field(...)
     stage: Stage = Field(...)
 
     @field_validator("reviewer_overturn_rate")
     @classmethod
-    def validate_overturn_rate(cls, v):
-        if v is not None and not (0.0 <= v <= 1.0):
-            raise ValueError(f"reviewer_overturn_rate must be in [0.0, 1.0], got {v}")
-        return v
+    def validate_overturn_rate(cls, value: Optional[float]) -> Optional[float]:
+        if value is not None and not (0.0 <= value <= 1.0):
+            raise ValueError(
+                f"reviewer_overturn_rate must be in [0.0, 1.0], got {value}"
+            )
+        return value
 
     @model_validator(mode="after")
-    def validate_overturn_rate_step_consistency(self):
+    def validate_overturn_rate_step_consistency(self) -> "ModGuardObservation":
         if self.step_number == 1 and self.reviewer_overturn_rate is not None:
             raise ValueError("reviewer_overturn_rate must be None at step_number=1.")
         return self
@@ -93,11 +98,18 @@ class ModGuardAction(Action):
 
 
 class ModGuardState(State):
-    step_number: int = Field(default=1, ge=1, le=3)
+    step_number: int = Field(default=1, ge=1, le=4)
     stage: Stage = Field(default=Stage.initial_review)
     escalation_budget: int = Field(default=1, ge=0)
-    ground_truth: GTLabel = Field(...)
+    starting_escalation_budget: int = Field(default=1, ge=0, le=1)
+    uncertainty_index: float = Field(default=0.0, ge=0.0, le=1.0)
     path_penalty_incurred: bool = Field(default=False)
     budget_violated: bool = Field(default=False)
+    repeated_escalations: int = Field(default=0, ge=0)
+    audit_required: bool = Field(default=False)
+    audit_triggered: bool = Field(default=False)
+    audit_reason: str = Field(default="")
+    proposed_resolution: Optional[ActionType] = Field(default=None)
+    last_action: Optional[ActionType] = Field(default=None)
     action_history: List[ActionType] = Field(default_factory=list)
     episode_done: bool = Field(default=False)

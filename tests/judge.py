@@ -1,17 +1,16 @@
-from pathlib import Path
-import os
-import re
-import math
-import statistics
+from __future__ import annotations
+
+import json
 import random
+import statistics
 import subprocess
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from server.environment import ModGuardEnvironment
-from server.models import (ActionType, ModGuardAction, ModGuardObservation, GTLabel, Stage, RiskLevel)
-
+from server.models import ActionType, ModGuardAction, Stage
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -23,578 +22,133 @@ def safe_read_text(path: Path) -> str:
         return ""
 
 
-def run_batch(num_episodes: int):
-    try:
-        rng = random.Random(42)
-        rewards = []
-        episodes = []
-        for i in range(num_episodes):
-            env = ModGuardEnvironment()
-            env.reset(seed=i)
-            done = False
-            steps = 0
-            terminal_reward = None
-            while not done:
-                action = ModGuardAction(action=rng.choice(list(ActionType)))
-                obs = env.step(action)
-                done = bool(obs.done)
-                steps += 1
-                if done:
-                    terminal_reward = float(obs.reward if obs.reward is not None else 0.0)
-                    break
-                if steps > 50:
-                    raise RuntimeError(f"Episode {i} exceeded safety step limit")
-            state = env.get_state()
-            history_len = len(state.action_history)
-            rewards.append(terminal_reward)
-            episodes.append(
-                {
-                    "episode_index": i,
-                    "steps": steps,
-                    "reward": terminal_reward,
-                    "action_history_len": history_len,
-                }
-            )
-        return {"ok": True, "rewards": rewards, "episodes": episodes, "error": ""}
-    except Exception as e:
-        return {"ok": False, "rewards": [], "episodes": [], "error": f"ERROR: {e}"}
-
-
 def pass_fail_line(check_id: str, description: str, passed: bool, reason: str) -> str:
     if passed:
         return f"  ✓ {check_id}: {description}"
     return f"  ✗ {check_id}: {description} — FAIL: {reason}"
 
 
-def score_dimension(results):
-    total = len(results)
-    passed = sum(1 for item in results if item["passed"])
-    if total == 0:
-        return 0.0, passed, total
-    score = (passed / total) * 10.0
-    return min(10.0, score), passed, total
-
-
-def check_window_tokens(text: str, tokens, window_size: int = 300) -> bool:
-    try:
-        if not text:
-            return False
-        lower_text = text.lower()
-        token_list = [t.lower() for t in tokens]
-        if len(lower_text) <= window_size:
-            windows = [lower_text]
-        else:
-            windows = [lower_text[i:i + window_size] for i in range(0, len(lower_text) - window_size + 1)]
-        for window in windows:
-            all_present = True
-            for token in token_list:
-                if re.search(re.escape(token), window, re.IGNORECASE | re.DOTALL) is None:
-                    all_present = False
-                    break
-            if all_present:
-                return True
-        return False
-    except Exception:
-        return False
+def batch_rollout(num_episodes: int) -> dict[str, object]:
+    rewards = []
+    steps = []
+    action_lengths = []
+    for seed in range(num_episodes):
+        chooser = random.Random(seed + 7)
+        env = ModGuardEnvironment()
+        obs = env.reset(seed=seed)
+        episode_steps = 0
+        while not obs.done:
+            obs = env.step(ModGuardAction(action=chooser.choice(list(ActionType))))
+            episode_steps += 1
+            if episode_steps > 20:
+                return {"ok": False, "error": f"episode {seed} exceeded safety limit"}
+        rewards.append(float(obs.reward or 0.0))
+        steps.append(episode_steps)
+        action_lengths.append(len(env.get_state().action_history))
+    return {
+        "ok": True,
+        "rewards": rewards,
+        "steps": steps,
+        "action_lengths": action_lengths,
+    }
 
 
 def main() -> int:
-    _ = os
-    _ = math
-    _ = subprocess
-    _ = GTLabel
-    _ = Stage
-    _ = RiskLevel
+    readme_text = safe_read_text(PROJECT_ROOT / "README.md").lower()
+    docker_text = safe_read_text(PROJECT_ROOT / "Dockerfile")
+    env_text = safe_read_text(PROJECT_ROOT / "server" / "environment.py")
+    app_text = safe_read_text(PROJECT_ROOT / "server" / "app.py")
+    inf_text = safe_read_text(PROJECT_ROOT / "inference.py")
+    models_text = safe_read_text(PROJECT_ROOT / "server" / "models.py")
+    openenv_text = safe_read_text(PROJECT_ROOT / "openenv.yaml")
 
-    readme_path = PROJECT_ROOT / "README.md"
-    env_path = PROJECT_ROOT / "server" / "environment.py"
-    models_path = PROJECT_ROOT / "server" / "models.py"
-    inference_path = PROJECT_ROOT / "inference.py"
-    dockerfile_path = PROJECT_ROOT / "Dockerfile"
-    openenv_path = PROJECT_ROOT / "openenv.yaml"
+    checks = []
 
-    readme_text = safe_read_text(readme_path)
-    env_text = safe_read_text(env_path)
-    models_text = safe_read_text(models_path)
-    inf_text = safe_read_text(inference_path)
-    docker_text = safe_read_text(dockerfile_path)
-    openenv_text = safe_read_text(openenv_path)
-
-    # Run programmatic batches before printing anything.
-    batch_200 = run_batch(200)
-    batch_500 = run_batch(500)
-
-    d1 = []
-    d2 = []
-    d3 = []
-    d4 = []
-    d5 = []
-    checklist = []
-    gaps = []
-
-    # ---------------- D1 ----------------
-    try:
-        passed = ("content moderation" in readme_text.lower()) or ("content policy" in readme_text.lower())
-        reason = "README missing content moderation/policy phrase"
-        d1.append({"id": "C1", "desc": "README contains 'content moderation' or 'content policy' (case-insensitive)", "passed": passed, "reason": reason})
-    except Exception as e:
-        d1.append({"id": "C1", "desc": "README contains 'content moderation' or 'content policy' (case-insensitive)", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        lower_readme = readme_text.lower()
-        passed = ("game" not in lower_readme) and ("toy" not in lower_readme) and ("puzzle" not in lower_readme)
-        reason = "README contains one of: game, toy, puzzle"
-        d1.append({"id": "C2", "desc": "README contains none of 'game', 'toy', 'puzzle' (case-insensitive)", "passed": passed, "reason": reason})
-    except Exception as e:
-        d1.append({"id": "C2", "desc": "README contains none of 'game', 'toy', 'puzzle' (case-insensitive)", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = ("approve" in env_text) and ("remove" in env_text) and ("legal_hold" in env_text)
-        reason = "server/environment.py missing one of approve/remove/legal_hold"
-        d1.append({"id": "C3", "desc": "server/environment.py contains approve, remove, and legal_hold", "passed": passed, "reason": reason})
-    except Exception as e:
-        d1.append({"id": "C3", "desc": "server/environment.py contains approve, remove, and legal_hold", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        lower_readme = readme_text.lower()
-        passed = any(x in lower_readme for x in ["enterprise", "trust", "safety", "triage"])
-        reason = "README missing enterprise/trust/safety/triage keywords"
-        d1.append({"id": "C4", "desc": "README contains enterprise/trust/safety/triage keyword (case-insensitive)", "passed": passed, "reason": reason})
-    except Exception as e:
-        d1.append({"id": "C4", "desc": "README contains enterprise/trust/safety/triage keyword (case-insensitive)", "passed": False, "reason": f"ERROR: {e}"})
-
-    # ---------------- D2 ----------------
-    if not batch_200["ok"]:
-        err = batch_200["error"]
-        for cid, desc in [
-            ("C1", "All terminal rewards in [0.0, 1.0]"),
-            ("C2", "At least 5 distinct rounded reward values across 200 episodes"),
-            ("C3", "statistics.variance(rewards) > 0.01"),
-            ("C4", "max(rewards) - min(rewards) > 0.3"),
-            ("C5", "At least one reward >= 0.8"),
-            ("C6", "At least one reward <= 0.3"),
-        ]:
-            d2.append({"id": cid, "desc": desc, "passed": False, "reason": err})
-        rewards_200 = []
+    batch = batch_rollout(150)
+    if not batch["ok"]:
+        checks.append(("R1", "Random rollouts complete without safety overflow", False, str(batch["error"])))
     else:
-        rewards_200 = batch_200["rewards"]
-        try:
-            passed = all((r >= 0.0 and r <= 1.0) for r in rewards_200)
-            d2.append({"id": "C1", "desc": "All terminal rewards in [0.0, 1.0]", "passed": passed, "reason": "Found reward outside [0.0, 1.0]"})
-        except Exception as e:
-            d2.append({"id": "C1", "desc": "All terminal rewards in [0.0, 1.0]", "passed": False, "reason": f"ERROR: {e}"})
-        try:
-            passed = len(set(round(r, 3) for r in rewards_200)) >= 5
-            d2.append({"id": "C2", "desc": "At least 5 distinct rounded reward values across 200 episodes", "passed": passed, "reason": "Distinct rounded rewards < 5"})
-        except Exception as e:
-            d2.append({"id": "C2", "desc": "At least 5 distinct rounded reward values across 200 episodes", "passed": False, "reason": f"ERROR: {e}"})
-        try:
-            passed = statistics.variance(rewards_200) > 0.01
-            d2.append({"id": "C3", "desc": "statistics.variance(rewards) > 0.01", "passed": passed, "reason": "Variance <= 0.01"})
-        except Exception as e:
-            d2.append({"id": "C3", "desc": "statistics.variance(rewards) > 0.01", "passed": False, "reason": f"ERROR: {e}"})
-        try:
-            passed = (max(rewards_200) - min(rewards_200)) > 0.3
-            d2.append({"id": "C4", "desc": "max(rewards) - min(rewards) > 0.3", "passed": passed, "reason": "Reward range <= 0.3"})
-        except Exception as e:
-            d2.append({"id": "C4", "desc": "max(rewards) - min(rewards) > 0.3", "passed": False, "reason": f"ERROR: {e}"})
-        try:
-            passed = any(r >= 0.8 for r in rewards_200)
-            d2.append({"id": "C5", "desc": "At least one reward >= 0.8", "passed": passed, "reason": "No reward >= 0.8"})
-        except Exception as e:
-            d2.append({"id": "C5", "desc": "At least one reward >= 0.8", "passed": False, "reason": f"ERROR: {e}"})
-        try:
-            passed = any(r <= 0.3 for r in rewards_200)
-            d2.append({"id": "C6", "desc": "At least one reward <= 0.3", "passed": passed, "reason": "No reward <= 0.3"})
-        except Exception as e:
-            d2.append({"id": "C6", "desc": "At least one reward <= 0.3", "passed": False, "reason": f"ERROR: {e}"})
+        rewards = batch["rewards"]  # type: ignore[assignment]
+        steps = batch["steps"]  # type: ignore[assignment]
+        action_lengths = batch["action_lengths"]  # type: ignore[assignment]
+        checks.append(("R1", "Random rollouts complete without safety overflow", True, ""))
+        checks.append(("R2", "All rewards are within [0, 1]", all(0.0 <= r <= 1.0 for r in rewards), "reward out of bounds"))
+        checks.append(("R3", "Reward variance is meaningful", statistics.pvariance(rewards) > 0.01, "variance too small"))
+        checks.append(("R4", "At least one low-score case exists", any(r <= 0.30 for r in rewards), "no low-score episodes"))
+        checks.append(("R5", "At least one high-score case exists", any(r >= 0.85 for r in rewards), "no high-score episodes"))
+        checks.append(("R6", "Episode depth never exceeds 4", all(length <= 4 for length in action_lengths), "action history exceeded 4"))
+        checks.append(("R7", "At least 25% of episodes are multi-step", sum(1 for s in steps if s > 1) / len(steps) >= 0.25, "too few multi-step cases"))
+        checks.append(("R8", "At least one episode reaches 3+ steps", any(s >= 3 for s in steps), "no deep trajectories"))
 
-    # ---------------- D3 ----------------
     try:
         env = ModGuardEnvironment()
-        a = env.reset(seed=99)
-        b = env.reset(seed=99)
-        fields = [
-            "content_category",
-            "risk_level",
-            "platform_context",
-            "ai_confidence_score",
-            "human_reviewer_hint",
-            "queue_pressure",
-            "step_number",
-            "stage",
-        ]
-        passed = all(getattr(a, f) == getattr(b, f) for f in fields)
-        d3.append({"id": "C1", "desc": "reset(seed=99) twice matches 8 specified fields", "passed": passed, "reason": "One or more compared fields differ"})
-    except Exception as e:
-        d3.append({"id": "C1", "desc": "reset(seed=99) twice matches 8 specified fields", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        env = ModGuardEnvironment()
-        obs = env.reset()
-        passed = (obs.step_number == 1) and (obs.stage.value == "initial_review") and (obs.done is False)
-        d3.append({"id": "C2", "desc": "reset() returns step_number=1, stage=initial_review, done=False", "passed": passed, "reason": "reset() state values not as expected"})
-    except Exception as e:
-        d3.append({"id": "C2", "desc": "reset() returns step_number=1, stage=initial_review, done=False", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        env = ModGuardEnvironment()
-        env.reset(seed=0)
-        first_obs = env.step(ModGuardAction(action=ActionType.escalate))
-        if first_obs.done:
-            env = ModGuardEnvironment()
-            env.reset(seed=0)
-            first_obs = env.step(ModGuardAction(action=ActionType.legal_hold))
-        passed = (first_obs.reward == 0.0) and (first_obs.done is False)
-        d3.append({"id": "C3", "desc": "First non-terminal transition returns reward=0.0 and done=False", "passed": passed, "reason": "Step was terminal or reward != 0.0"})
-    except Exception as e:
-        d3.append({"id": "C3", "desc": "First non-terminal transition returns reward=0.0 and done=False", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        env = ModGuardEnvironment()
-        obs = env.reset(seed=1)
-        rng_local = random.Random(42)
-        guard = 0
-        while not obs.done:
-            obs = env.step(ModGuardAction(action=rng_local.choice(list(ActionType))))
-            guard += 1
-            if guard > 50:
-                raise RuntimeError("Exceeded safety loop in terminal-step test")
-        passed = (obs.done is True) and (obs.reward is not None) and (0.0 <= float(obs.reward) <= 1.0)
-        d3.append({"id": "C4", "desc": "Terminal step returns done=True and reward in [0.0, 1.0]", "passed": passed, "reason": "Terminal step constraints not met"})
-    except Exception as e:
-        d3.append({"id": "C4", "desc": "Terminal step returns done=True and reward in [0.0, 1.0]", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        keys = set(ModGuardObservation.model_fields.keys())
-        required = {
-            "content_category",
-            "risk_level",
-            "platform_context",
-            "ai_confidence_score",
-            "human_reviewer_hint",
-            "queue_pressure",
-            "reviewer_overturn_rate",
-            "step_number",
-            "case_history",
-            "stage",
-        }
-        passed = required.issubset(keys)
-        d3.append({"id": "C5", "desc": "ModGuardObservation.model_fields includes all 10 spec fields", "passed": passed, "reason": "Missing one or more required spec fields"})
-    except Exception as e:
-        d3.append({"id": "C5", "desc": "ModGuardObservation.model_fields includes all 10 spec fields", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        values = set(a.value for a in ActionType)
-        passed = values == {"approve", "remove", "escalate", "legal_hold"}
-        d3.append({"id": "C6", "desc": "ActionType values exactly match approve/remove/escalate/legal_hold", "passed": passed, "reason": f"Unexpected ActionType values: {sorted(values)}"})
-    except Exception as e:
-        d3.append({"id": "C6", "desc": "ActionType values exactly match approve/remove/escalate/legal_hold", "passed": False, "reason": f"ERROR: {e}"})
-    if not batch_500["ok"]:
-        err = batch_500["error"]
-        d3.append({"id": "C7", "desc": "500-episode batch: no episode exceeds 3 actions in action_history", "passed": False, "reason": err})
-        d3.append({"id": "C8", "desc": "500-episode batch: at least 20% of episodes have steps > 1", "passed": False, "reason": err})
-    else:
-        episodes_500 = batch_500["episodes"]
-        try:
-            passed = all(e["action_history_len"] <= 3 for e in episodes_500)
-            d3.append({"id": "C7", "desc": "500-episode batch: no episode exceeds 3 actions in action_history", "passed": passed, "reason": "Found action_history length > 3"})
-        except Exception as e:
-            d3.append({"id": "C7", "desc": "500-episode batch: no episode exceeds 3 actions in action_history", "passed": False, "reason": f"ERROR: {e}"})
-        try:
-            ratio = sum(1 for e in episodes_500 if e["steps"] > 1) / 500.0
-            passed = ratio >= 0.2
-            d3.append({"id": "C8", "desc": "500-episode batch: at least 20% of episodes have steps > 1", "passed": passed, "reason": f"Multi-step ratio {ratio:.3f} < 0.2"})
-        except Exception as e:
-            d3.append({"id": "C8", "desc": "500-episode batch: at least 20% of episodes have steps > 1", "passed": False, "reason": f"ERROR: {e}"})
+        obs = env.reset(seed=3)
+        state_dump = env.get_state().model_dump()
+        checks.append(("C1", "Reset returns initial_review at step 1", obs.stage == Stage.initial_review and obs.step_number == 1, "unexpected initial stage"))
+        checks.append(("C2", "Public state excludes hidden ground_truth", "ground_truth" not in state_dump, "ground_truth leaked in state"))
+        checks.append(("C3", "Observation metadata includes audit/uncertainty info", {"ai_recommendation", "uncertainty_index", "signal_conflict_score"}.issubset(obs.metadata.keys()), "missing metadata fields"))
+    except Exception as exc:
+        checks.append(("C1", "Reset returns initial_review at step 1", False, str(exc)))
+        checks.append(("C2", "Public state excludes hidden ground_truth", False, str(exc)))
+        checks.append(("C3", "Observation metadata includes audit/uncertainty info", False, str(exc)))
 
-    # ---------------- D4 ----------------
-    try:
-        passed = dockerfile_path.exists()
-        d4.append({"id": "C1", "desc": "PROJECT_ROOT/Dockerfile exists", "passed": passed, "reason": "Dockerfile missing at project root"})
-    except Exception as e:
-        d4.append({"id": "C1", "desc": "PROJECT_ROOT/Dockerfile exists", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = openenv_path.exists()
-        d4.append({"id": "C2", "desc": "PROJECT_ROOT/openenv.yaml exists", "passed": passed, "reason": "openenv.yaml missing at project root"})
-    except Exception as e:
-        d4.append({"id": "C2", "desc": "PROJECT_ROOT/openenv.yaml exists", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = inference_path.exists()
-        d4.append({"id": "C3", "desc": "PROJECT_ROOT/inference.py exists", "passed": passed, "reason": "inference.py missing at project root"})
-    except Exception as e:
-        d4.append({"id": "C3", "desc": "PROJECT_ROOT/inference.py exists", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = (PROJECT_ROOT / "server" / "__init__.py").exists()
-        d4.append({"id": "C4", "desc": "PROJECT_ROOT/server/__init__.py exists", "passed": passed, "reason": "server/__init__.py missing"})
-    except Exception as e:
-        d4.append({"id": "C4", "desc": "PROJECT_ROOT/server/__init__.py exists", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        p = PROJECT_ROOT / "client" / "__init__.py"
-        passed = p.exists()
-        reason = "create empty file at client/__init__.py"
-        d4.append({"id": "C5", "desc": "PROJECT_ROOT/client/__init__.py exists", "passed": passed, "reason": reason})
-    except Exception as e:
-        d4.append({"id": "C5", "desc": "PROJECT_ROOT/client/__init__.py exists", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = (PROJECT_ROOT / "client" / "client.py").exists()
-        d4.append({"id": "C6", "desc": "PROJECT_ROOT/client/client.py exists", "passed": passed, "reason": "client/client.py missing"})
-    except Exception as e:
-        d4.append({"id": "C6", "desc": "PROJECT_ROOT/client/client.py exists", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = readme_path.exists()
-        d4.append({"id": "C7", "desc": "PROJECT_ROOT/README.md exists", "passed": passed, "reason": "README.md missing"})
-    except Exception as e:
-        d4.append({"id": "C7", "desc": "PROJECT_ROOT/README.md exists", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "ENABLE_WEB_INTERFACE=true" in docker_text
-        d4.append({"id": "C8", "desc": "Dockerfile contains ENABLE_WEB_INTERFACE=true", "passed": passed, "reason": "ENABLE_WEB_INTERFACE=true not found"})
-    except Exception as e:
-        d4.append({"id": "C8", "desc": "Dockerfile contains ENABLE_WEB_INTERFACE=true", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = not (PROJECT_ROOT / "server" / "Dockerfile").exists()
-        d4.append({"id": "C9", "desc": "server/Dockerfile does not exist", "passed": passed, "reason": "server/Dockerfile exists but should be absent"})
-    except Exception as e:
-        d4.append({"id": "C9", "desc": "server/Dockerfile does not exist", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "[START]" in inf_text
-        d4.append({"id": "C10", "desc": "inference.py contains [START]", "passed": passed, "reason": "[START] not found"})
-    except Exception as e:
-        d4.append({"id": "C10", "desc": "inference.py contains [START]", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "[STEP]" in inf_text
-        d4.append({"id": "C11", "desc": "inference.py contains [STEP]", "passed": passed, "reason": "[STEP] not found"})
-    except Exception as e:
-        d4.append({"id": "C11", "desc": "inference.py contains [STEP]", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "[END]" in inf_text
-        d4.append({"id": "C12", "desc": "inference.py contains [END]", "passed": passed, "reason": "[END] not found"})
-    except Exception as e:
-        d4.append({"id": "C12", "desc": "inference.py contains [END]", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "API_BASE_URL" in inf_text
-        d4.append({"id": "C13", "desc": "inference.py contains API_BASE_URL", "passed": passed, "reason": "API_BASE_URL not found"})
-    except Exception as e:
-        d4.append({"id": "C13", "desc": "inference.py contains API_BASE_URL", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "MODEL_NAME" in inf_text
-        d4.append({"id": "C14", "desc": "inference.py contains MODEL_NAME", "passed": passed, "reason": "MODEL_NAME not found"})
-    except Exception as e:
-        d4.append({"id": "C14", "desc": "inference.py contains MODEL_NAME", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "HF_TOKEN" in inf_text
-        d4.append({"id": "C15", "desc": "inference.py contains HF_TOKEN", "passed": passed, "reason": "HF_TOKEN not found"})
-    except Exception as e:
-        d4.append({"id": "C15", "desc": "inference.py contains HF_TOKEN", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "load_dotenv" in inf_text
-        d4.append({"id": "C16", "desc": "inference.py contains load_dotenv", "passed": passed, "reason": "load_dotenv not found"})
-    except Exception as e:
-        d4.append({"id": "C16", "desc": "inference.py contains load_dotenv", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "router.huggingface.co" in inf_text
-        d4.append({"id": "C17", "desc": "inference.py contains router.huggingface.co", "passed": passed, "reason": "router.huggingface.co not found"})
-    except Exception as e:
-        d4.append({"id": "C17", "desc": "inference.py contains router.huggingface.co", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "api.openai.com" not in inf_text
-        d4.append({"id": "C18", "desc": "inference.py does not contain api.openai.com", "passed": passed, "reason": "api.openai.com found in inference.py"})
-    except Exception as e:
-        d4.append({"id": "C18", "desc": "inference.py does not contain api.openai.com", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "NUM_EPISODES" in inf_text
-        d4.append({"id": "C19", "desc": "inference.py contains NUM_EPISODES", "passed": passed, "reason": "NUM_EPISODES not found"})
-    except Exception as e:
-        d4.append({"id": "C19", "desc": "inference.py contains NUM_EPISODES", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "entry_point" in openenv_text
-        d4.append({"id": "C20", "desc": "openenv.yaml contains entry_point", "passed": passed, "reason": "entry_point not found in openenv.yaml"})
-    except Exception as e:
-        d4.append({"id": "C20", "desc": "openenv.yaml contains entry_point", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "from server.models import *" not in env_text
-        d4.append({"id": "C21", "desc": "server/environment.py does not use wildcard import from server.models", "passed": passed, "reason": "Wildcard import found in server/environment.py"})
-    except Exception as e:
-        d4.append({"id": "C21", "desc": "server/environment.py does not use wildcard import from server.models", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = ("action_schema" in openenv_text) or ("observation_schema" in openenv_text)
-        d4.append({"id": "C22", "desc": "openenv.yaml contains action_schema or observation_schema", "passed": passed, "reason": "Neither action_schema nor observation_schema found"})
-    except Exception as e:
-        d4.append({"id": "C22", "desc": "openenv.yaml contains action_schema or observation_schema", "passed": False, "reason": f"ERROR: {e}"})
+    checks.append(("D1", "README describes content moderation motivation", "moderation" in readme_text and "trust-and-safety" in readme_text.replace(" ", "-"), "README missing motivation keywords"))
+    checks.append(("D2", "README explains reward design", "reward design" in readme_text or "reward is continuous" in readme_text, "README missing reward explanation"))
+    checks.append(("D3", "README documents audit stage", "post-decision audit" in readme_text, "README missing audit stage"))
+    checks.append(("D4", "README documents 1 to 4 steps", "1 to 4" in readme_text or "1–4" in readme_text, "README missing trajectory depth"))
 
-    # ---------------- D5 ----------------
-    try:
-        passed = all(token in env_text for token in ["0.45", "0.25", "0.20", "0.10"])
-        d5.append({"id": "C1", "desc": "server/environment.py contains grade weights 0.45, 0.25, 0.20, 0.10", "passed": passed, "reason": "One or more required grade weights missing"})
-    except Exception as e:
-        d5.append({"id": "C1", "desc": "server/environment.py contains grade weights 0.45, 0.25, 0.20, 0.10", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "path_penalty_incurred" in env_text
-        d5.append({"id": "C2", "desc": "server/environment.py contains path_penalty_incurred", "passed": passed, "reason": "path_penalty_incurred not found"})
-    except Exception as e:
-        d5.append({"id": "C2", "desc": "server/environment.py contains path_penalty_incurred", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = ("escalation_review" in env_text) and ("legal_review" in env_text)
-        d5.append({"id": "C3", "desc": "server/environment.py contains escalation_review and legal_review", "passed": passed, "reason": "Missing escalation_review or legal_review"})
-    except Exception as e:
-        d5.append({"id": "C3", "desc": "server/environment.py contains escalation_review and legal_review", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "1.0 - base" in env_text
-        d5.append({"id": "C4", "desc": "server/environment.py contains adversarial confidence inversion '1.0 - base'", "passed": passed, "reason": "'1.0 - base' not found"})
-    except Exception as e:
-        d5.append({"id": "C4", "desc": "server/environment.py contains adversarial confidence inversion '1.0 - base'", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        triggers = {
-            "T1": ["escalation_review", "escalate", "path_penalty"],
-            "T2": ["escalation_review", "legal_hold", "path_penalty"],
-            "T3": ["legal_review", "escalate", "path_penalty"],
-            "T4": ["legal_review", "legal_hold", "path_penalty"],
-            "T5": ["action_history", "legal_hold"],
-        }
-        hit_count = 0
-        details = []
-        for key, tokens in triggers.items():
-            hit = check_window_tokens(env_text, tokens, window_size=300)
-            if hit:
-                hit_count += 1
-            details.append(f"{key}={hit}")
-        passed = hit_count >= 4
-        d5.append({"id": "C5", "desc": "At least 4/5 path-penalty trigger token groups found within 300-char windows", "passed": passed, "reason": f"Found {hit_count}/5 triggers ({', '.join(details)})"})
-    except Exception as e:
-        d5.append({"id": "C5", "desc": "At least 4/5 path-penalty trigger token groups found within 300-char windows", "passed": False, "reason": f"ERROR: {e}"})
+    checks.append(("S1", "Models allow step_number up to 4", "le=4" in models_text, "step_number upper bound not updated"))
+    checks.append(("S2", "Audit stage is present", "post_decision_audit" in models_text and "post_decision_audit" in env_text, "audit stage missing"))
+    checks.append(("S3", "Environment contains overconfidence penalty", "OVERCONFIDENCE_PENALTY_WEIGHT" in env_text, "overconfidence penalty missing"))
+    checks.append(("S4", "Environment contains consistency scoring", "_consistency_score" in env_text, "consistency score missing"))
 
-    # ---------------- CHECKLIST (informational) ----------------
+    checks.append(("H1", "Dockerfile defaults to RUN_MODE=serve", "ENV RUN_MODE=serve" in docker_text, "RUN_MODE default missing"))
+    checks.append(("H2", "Dockerfile starts uvicorn on 0.0.0.0", "uvicorn" in docker_text and "0.0.0.0" in safe_read_text(PROJECT_ROOT / "docker-entrypoint.sh"), "server startup command missing"))
+    checks.append(("H3", "Dockerfile targets port 7860", "PORT=7860" in docker_text, "port 7860 missing"))
+    checks.append(("H4", "App exposes /health", "@app.get(\"/health\"" in app_text, "/health endpoint missing"))
+    checks.append(("H5", "App exposes /reset, /step, and /state", all(token in app_text for token in ["/reset", "/step", "/state"]), "simulation endpoints missing"))
+    checks.append(("H6", "openenv.yaml uses port 7860", "port: 7860" in openenv_text, "openenv port not updated"))
+
+    checks.append(("I1", "inference.py supports RUN_MODE eval/serve split", "RUN_MODE" in inf_text and "_should_serve_forever" in inf_text, "RUN_MODE logic missing"))
+    checks.append(("I2", "inference.py does not spawn subprocess servers", "subprocess" not in inf_text, "subprocess usage found"))
+    checks.append(("I3", "inference.py supports in-process fallback", "InProcessModGuardClient" in inf_text and "falling back to in-process environment" in inf_text, "in-process fallback missing"))
+    checks.append(("I4", "inference.py emits structured summary JSON", "json.dumps(summary" in inf_text, "summary output missing"))
+
+    passed = 0
+    print("ModGuard-RL validation")
+    for check_id, description, ok, reason in checks:
+        print(pass_fail_line(check_id, description, ok, reason))
+        passed += int(ok)
+
+    total = len(checks)
+    print(f"\nScore: {passed}/{total} checks passed")
+
+    eval_cmd = [
+        "python3",
+        str(PROJECT_ROOT / "inference.py"),
+    ]
     try:
-        checklist.append({"id": "P1", "desc": "Dockerfile at project root", "passed": (PROJECT_ROOT / "Dockerfile").exists(), "reason": "Dockerfile missing at project root"})
-    except Exception as e:
-        checklist.append({"id": "P1", "desc": "Dockerfile at project root", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        checklist.append({"id": "P2", "desc": "inference.py at project root", "passed": (PROJECT_ROOT / "inference.py").exists(), "reason": "inference.py missing at project root"})
-    except Exception as e:
-        checklist.append({"id": "P2", "desc": "inference.py at project root", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = re.search(r"\[START\] task=\S+ env=\S+ model=\S+", inf_text) is not None
-        checklist.append({"id": "P3", "desc": "[START] log format correct", "passed": passed, "reason": "START pattern not found"})
-    except Exception as e:
-        checklist.append({"id": "P3", "desc": "[START] log format correct", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = re.search(r"\[STEP\].*step=\d+.*action=\S+.*reward=[\d.]+.*done=(true|false).*error=\S+", inf_text) is not None
-        checklist.append({"id": "P4", "desc": "[STEP] log format correct", "passed": passed, "reason": "STEP pattern not found"})
-    except Exception as e:
-        checklist.append({"id": "P4", "desc": "[STEP] log format correct", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = re.search(r"\[END\].*success=(true|false).*steps=\d+.*score=[\d.]+.*rewards=[\d.,]+", inf_text) is not None
-        checklist.append({"id": "P5", "desc": "[END] log format correct", "passed": passed, "reason": "END pattern not found"})
-    except Exception as e:
-        checklist.append({"id": "P5", "desc": "[END] log format correct", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "SUCCESS_SCORE_THRESHOLD" in inf_text
-        checklist.append({"id": "P6", "desc": "SUCCESS_SCORE_THRESHOLD defined", "passed": passed, "reason": "SUCCESS_SCORE_THRESHOLD not found"})
-    except Exception as e:
-        checklist.append({"id": "P6", "desc": "SUCCESS_SCORE_THRESHOLD defined", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        m = re.search(r"MAX_STEPS\s*=\s*(\d+)", inf_text)
-        passed = (m is not None) and (int(m.group(1)) <= 3)
-        checklist.append({"id": "P7", "desc": "MAX_STEPS <= 3", "passed": passed, "reason": "MAX_STEPS missing or > 3"})
-    except Exception as e:
-        checklist.append({"id": "P7", "desc": "MAX_STEPS <= 3", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "NUM_EPISODES" in inf_text
-        checklist.append({"id": "P8", "desc": "NUM_EPISODES defined", "passed": passed, "reason": "NUM_EPISODES not found"})
-    except Exception as e:
-        checklist.append({"id": "P8", "desc": "NUM_EPISODES defined", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        lower_inf = inf_text.lower()
-        passed = ("import torch" not in lower_inf) and ("import tensorflow" not in lower_inf)
-        checklist.append({"id": "P9", "desc": "No GPU dependencies (torch/tensorflow imports)", "passed": passed, "reason": "Found torch/tensorflow import in inference.py"})
-    except Exception as e:
-        checklist.append({"id": "P9", "desc": "No GPU dependencies (torch/tensorflow imports)", "passed": False, "reason": f"ERROR: {e}"})
-    try:
-        passed = "self.rng" in env_text
-        checklist.append({"id": "P10", "desc": "Deterministic RNG (self.rng) present in environment.py", "passed": passed, "reason": "self.rng not found in environment.py"})
-    except Exception as e:
-        checklist.append({"id": "P10", "desc": "Deterministic RNG (self.rng) present in environment.py", "passed": False, "reason": f"ERROR: {e}"})
+        proc = subprocess.run(
+            ["env", "RUN_MODE=eval", "FORCE_INPROCESS=1", "NUM_EPISODES_PER_TASK=1", *eval_cmd],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        print("\nEval smoke exit code:", proc.returncode)
+        stderr_tail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else ""
+        if stderr_tail:
+            try:
+                parsed = json.loads(stderr_tail)
+                print("Eval aggregate:", parsed.get("overall", {}).get("aggregate"))
+            except Exception:
+                print("Eval stderr tail:", stderr_tail)
+    except Exception as exc:
+        print("\nEval smoke failed:", exc)
 
-    # Collect gaps from all failed checks.
-    for section_name, section in [("D1", d1), ("D2", d2), ("D3", d3), ("D4", d4), ("D5", d5), ("CHECKLIST", checklist)]:
-        for item in section:
-            if not item["passed"]:
-                gaps.append((section_name, item["id"], item["reason"]))
-
-    # Scores and weighted points.
-    d1_score, _, _ = score_dimension(d1)
-    d2_score, _, _ = score_dimension(d2)
-    d3_score, _, _ = score_dimension(d3)
-    d4_score, _, _ = score_dimension(d4)
-    d5_score, _, _ = score_dimension(d5)
-
-    d1_weighted = d1_score * 0.30
-    d2_weighted = d2_score * 0.25
-    d3_weighted = d3_score * 0.20
-    d4_weighted = d4_score * 0.15
-    d5_weighted = d5_score * 0.10
-    final_score = d1_weighted + d2_weighted + d3_weighted + d4_weighted + d5_weighted
-
-    # Reward stats for D2 output.
-    if rewards_200:
-        min_r = min(rewards_200)
-        max_r = max(rewards_200)
-        mean_r = statistics.mean(rewards_200)
-        var_r = statistics.variance(rewards_200) if len(rewards_200) > 1 else 0.0
-        distinct_r = len(set(round(r, 3) for r in rewards_200))
-    else:
-        min_r = 0.0
-        max_r = 0.0
-        mean_r = 0.0
-        var_r = 0.0
-        distinct_r = 0
-
-    # ---------------- OUTPUT ----------------
-    print("[D1] Real-world utility (30%)")
-    for item in d1:
-        print(pass_fail_line(item["id"], item["desc"], item["passed"], item["reason"]))
-    print(f"  Score: {d1_score:.1f} / 10  Weighted: {d1_weighted:.2f} pts")
-    print()
-
-    print("[D2] Task & grader quality (25%)")
-    for item in d2:
-        print(pass_fail_line(item["id"], item["desc"], item["passed"], item["reason"]))
-    print(f"  Reward stats: min={min_r:.2f} max={max_r:.2f} mean={mean_r:.2f} var={var_r:.2f} distinct={distinct_r}")
-    print(f"  Score: {d2_score:.1f} / 10  Weighted: {d2_weighted:.2f} pts")
-    print()
-
-    print("[D3] Environment design (20%)")
-    for item in d3:
-        print(pass_fail_line(item["id"], item["desc"], item["passed"], item["reason"]))
-    print(f"  Score: {d3_score:.1f} / 10  Weighted: {d3_weighted:.2f} pts")
-    print()
-
-    print("[D4] Code quality & compliance (15%)")
-    for item in d4:
-        print(pass_fail_line(item["id"], item["desc"], item["passed"], item["reason"]))
-    print(f"  Score: {d4_score:.1f} / 10  Weighted: {d4_weighted:.2f} pts")
-    print()
-
-    print("[D5] Creativity & novelty (10%)")
-    for item in d5:
-        print(pass_fail_line(item["id"], item["desc"], item["passed"], item["reason"]))
-    print(f"  Score: {d5_score:.1f} / 10  Weighted: {d5_weighted:.2f} pts")
-    print()
-
-    print("[CHECKLIST] Pre-submission gates")
-    checklist_passed = 0
-    for item in checklist:
-        print(pass_fail_line(item["id"], item["desc"], item["passed"], item["reason"]))
-        if item["passed"]:
-            checklist_passed += 1
-    print(f"  Gates passed: {checklist_passed}/10")
-    print()
-
-    print("[SCORE] Final")
-    print(f"  FINAL SCORE: {final_score:.2f} / 10")
-    print()
-
-    print("GAPS:")
-    if not gaps:
-        print("  None")
-    else:
-        for section_name, cid, reason in gaps:
-            print(f"  - {section_name} {cid}: {reason}")
-
-    # Never abort the judge due to failed checks.
-    return 0
+    return 0 if passed == total else 1
 
 
 if __name__ == "__main__":

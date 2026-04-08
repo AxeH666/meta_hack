@@ -1,233 +1,232 @@
 ---
-title: meta_RL_mod
-emoji: 🤖
+title: ModGuard-RL
+emoji: 🛡️
 colorFrom: blue
-colorTo: indigo
+colorTo: cyan
 sdk: docker
-app_port: 8000
+app_port: 7860
 pinned: false
 ---
 
 # ModGuard-RL
 
-ModGuard-RL is an OpenEnv environment for multi-stage content moderation in Trust and Safety operations. The agent must decide whether to `approve`, `remove`, `escalate`, or `legal_hold` under uncertainty, budget constraints, and noisy human/AI signals.
+ModGuard-RL is an OpenEnv environment for trust-and-safety triage. An agent reviews flagged content and must choose one of four actions: `approve`, `remove`, `escalate`, or `legal_hold`. Unlike a one-shot classifier benchmark, this environment models operational moderation flow: scarce escalation capacity, contradictory AI and human signals, legal-liability edge cases, and post-decision audits that can overturn an apparently reasonable early choice.
 
-## 1) Motivation
+## Why moderation RL matters
 
-Large social platforms process massive moderation queues every day. Every action has real-world consequences: approving harmful content increases downstream harm, removing legitimate content suppresses speech, and unnecessary escalations slow operations.
+Real moderation systems are full of sequential tradeoffs. Approving harmful content increases downstream harm. Removing benign content suppresses speech and damages user trust. Escalation queues are expensive. Legal-hold workflows are rare but high stakes. A useful evaluation environment should capture all of those tensions together, not flatten them into a single label prediction.
 
-Trust and Safety work is not a single-shot binary classifier problem. It is a staged workflow with policy, legal, and operational constraints. Teams must triage uncertainty, reason about partial signals, and make defensible decisions under throughput pressure.
+ModGuard-RL turns that workflow into a compact RL problem with rich process feedback. It rewards not only final correctness, but also calibrated caution, coherent action sequencing, and resistance to misleading confidence signals.
 
-ModGuard-RL simulates this real moderation workflow as a compact RL environment. The agent is rewarded not just for final correctness, but also for process quality, hint calibration, and timely resolution.
+## What is novel here
 
-## 2) Environment Overview
+- Adversarial AI behavior: the visible AI recommendation can be paired with very high confidence even when it is wrong.
+- Conflicting signal design: risk level, reviewer hint, and account history can disagree in structured ways.
+- Noisy reviewer hints: hints may be correct, noisy, absent, or actively adversarial.
+- Operational edge cases: some episodes start with zero escalation budget, repeated escalation chains are penalized, and some legal-hold cases only become obvious after an audit.
+- Post-decision audit stage: episodes can extend to 4 decisions, forcing the agent to revise an earlier choice when new signals surface.
+- Anti-reward-hacking design: hidden ground truth is not exposed through the public `state()` API.
 
-State machine:
+## Environment structure
+
+Stages:
 
 ```text
 initial_review
-  ├─ approve/remove -> terminal
-  ├─ escalate -> escalation_review (step 2, budget may decrement)
-  └─ legal_hold -> legal_review (step 2)
+  ├─ approve/remove -> terminal OR post_decision_audit
+  ├─ escalate -> escalation_review (if budget remains)
+  ├─ escalate -> post_decision_audit with penalty (if budget is already zero)
+  └─ legal_hold -> legal_review
 
-escalation_review (step 2)
-  ├─ approve/remove -> terminal
-  ├─ escalate -> terminal + path penalty
-  └─ legal_hold
-      ├─ risk=critical -> legal_review (step 3)
-      ├─ GT=legal_hold and risk!=critical -> terminal
-      └─ otherwise -> terminal + path penalty
+escalation_review
+  ├─ approve/remove -> terminal OR post_decision_audit
+  ├─ escalate -> post_decision_audit with repeated-escalation penalty
+  └─ legal_hold -> legal_review
 
-legal_review (step 2)
-  ├─ approve/remove -> terminal
-  ├─ escalate -> terminal + path penalty
-  └─ legal_hold
-      ├─ risk=critical -> legal_review (step 3)
-      ├─ GT=legal_hold and risk!=critical -> terminal
-      └─ otherwise -> terminal + path penalty
+legal_review
+  ├─ approve/remove/legal_hold -> terminal OR post_decision_audit
+  └─ escalate -> post_decision_audit with penalty
 
-legal_review (step 3)
+post_decision_audit
   └─ any action -> terminal
 ```
 
-## 3) Observation Space
+Episode length is now 1 to 4 steps.
 
-| Field | Type | Range | Description |
-|---|---|---|---|
-| `content_category` | enum | fixed set | Policy category for the flagged case. |
-| `risk_level` | enum | `low/medium/high/critical` | Severity context that gates legal path behavior. |
-| `platform_context` | enum | fixed set | Product surface where the case originated. |
-| `ai_confidence_score` | float | `[0.0, 1.0]` | Model confidence signal (difficulty-conditioned). |
-| `human_reviewer_hint` | enum/null | action or `None` | Optional reviewer recommendation. |
-| `queue_pressure` | int | `1..5` | Current queue urgency/operational pressure. |
-| `reviewer_overturn_rate` | float/null | `None` at step 1, `[0.0, 1.0]` at step 2+ | Reviewer disagreement tendency signal. |
-| `step_number` | int | `1..3` | Current decision step. |
-| `case_history` | object | constrained | Prior account escalation count + account risk score. |
-| `stage` | enum | `initial_review/escalation_review/legal_review` | Current state-machine stage. |
+## Observation and state
 
-## 4) Action Space
+Core observation fields remain compact and OpenEnv-friendly:
 
-| Action | When to use | Consequences |
-|---|---|---|
-| `approve` | Content does not violate policy. | Can terminate immediately; high reward only if aligned with GT. |
-| `remove` | Clear policy violation with confidence. | Can terminate immediately; incorrect removals hurt correctness. |
-| `escalate` | Uncertain case requiring senior review. | Consumes limited escalation budget (1 total). Budget misuse harms process score. |
-| `legal_hold` | Potential legal liability requiring preservation. | Correct in specific legal-risk scenarios; wrong usage can trigger path penalties. |
+- `content_category`
+- `risk_level`
+- `platform_context`
+- `ai_confidence_score`
+- `human_reviewer_hint`
+- `queue_pressure`
+- `reviewer_overturn_rate`
+- `step_number`
+- `case_history`
+- `stage`
 
-## 5) Reward Signal
+Additional operational info is carried in `observation.metadata`, including:
 
-Final grade formula:
+- `ai_recommendation`
+- `signal_conflict_score`
+- `uncertainty_index`
+- `scenario_tags`
+- `audit_reason`
+- `escalation_budget_remaining`
+- `reward_breakdown` on terminal steps
 
-`grade = correctness×0.45 + process×0.25 + hint×0.20 + speed×0.10`
+Public state is intentionally operational, not answer-revealing. It includes budget, step count, repeated escalation count, audit flags, proposed resolution, and action history, but not hidden ground truth.
 
-- `correctness` rewards terminal policy alignment with ground truth.
-- `process` rewards path efficiency and policy-safe workflow; it is forced to `0.0` on budget violation.
-- `hint` rewards calibrated use of reviewer hints, including successful override of bad guidance.
-- `speed` rewards earlier correct resolution.
+## Reward design
 
-Correctness table:
+The reward is continuous, clamped to `[0, 1]`, and intentionally decomposed into interpretable parts:
 
-| GT \ terminal_action | approve | remove | escalate | legal_hold |
-|---|---:|---:|---:|---:|
-| approve | 1.0 | 0.5 | 0.1 | 0.0 |
-| remove | 0.5 | 1.0 | 0.3 | 0.1 |
-| legal_hold | 0.0 | 0.1 | 0.5 | 1.0 |
+```text
+reward =
+  correctness          * 0.36 +
+  process              * 0.18 +
+  hint_calibration     * 0.10 +
+  speed                * 0.10 +
+  consistency          * 0.14 +
+  uncertainty_awareness* 0.12 -
+  overconfidence_penalty*0.12
+```
 
-Hint scoring table:
+Component intuition:
 
-| Condition | Hint score |
-|---|---:|
-| `hint is None` | 0.5 |
-| `hint == terminal_action` and `hint == GT` | 0.8 |
-| `hint == terminal_action` and `hint != GT` | 0.0 |
-| `hint != terminal_action` and `hint == GT` | 0.3 |
-| `hint != terminal_action` and `hint != GT` | 1.0 |
+- `correctness`: final action quality relative to the hidden label.
+- `process`: respects escalation budget, avoids path penalties, and matches the episode’s natural trajectory length.
+- `hint_calibration`: rewards using good hints and ignoring bad ones.
+- `speed`: prefers resolving easy cases quickly.
+- `consistency`: rewards coherent action sequences and penalizes escalation chains.
+- `uncertainty_awareness`: rewards caution when signals conflict and decisiveness when they do not.
+- `overconfidence_penalty`: punishes blind trust in high-confidence AI signals when the case is adversarial.
 
-The highest hint score (`1.0`) is assigned when the agent correctly avoids following a wrong hint, explicitly incentivizing calibrated trust instead of blind obedience.
+This design makes reward hacking harder: repeated escalation and premature high-confidence decisions do not dominate the score, and public state does not leak the hidden label.
 
-## 6) Difficulty Levels
+## Example trajectories
 
-| Difficulty | AI confidence behavior | Human hint behavior | Adversarial properties |
-|---|---|---|---|
-| `easy` | `base = U(0.7,1.0)` | Always equals ground truth action | None |
-| `medium` | `clamp(base + U(-0.2,0.2))` | Correct with 0.6 probability; otherwise wrong random action | Moderate noise |
-| `hard` | `1.0 - base` (always inverted) | Always `None` | Confidence is adversarially inverted; hints unavailable |
+### 1. Routine approve
 
-## 7) Path Penalty Triggers
+```text
+step 1: initial_review
+signals: low risk, aligned hint, low conflict
+action: approve
+result: terminal, high reward
+```
 
-`path_penalty_incurred` is sticky once set to `True` and never resets within an episode.
+### 2. Budget trap with audit recovery
 
-1. `escalation_review` + `escalate` -> immediate terminal penalty (redundant escalation).
-2. `escalation_review` + `legal_hold` + non-critical risk + `GT != legal_hold` -> penalty (incorrect legal routing).
-3. `legal_review` + `escalate` -> penalty (invalid re-escalation from legal stage).
-4. `legal_review` + `legal_hold` + `GT != legal_hold` -> penalty (incorrect legal hold confirmation).
-5. Entering step 3 when first action was `legal_hold` -> penalty on entry (inefficient path pattern).
+```text
+step 1: initial_review, zero escalation budget, conflicting signals
+action: escalate
+result: budget violation, forced audit path
 
-## 8) Task Suite
+step 2: post_decision_audit
+new signal: high overturn risk, remove hint
+action: remove
+result: terminal, partial reward but process penalty remains
+```
 
-The final benchmark submission evaluates three explicit task wrappers in `inference.py` (environment logic is unchanged):
+### 3. Delayed legal requirement
 
-- `task_1_routine_triage`: resolves straightforward moderation outcomes quickly with high correctness and speed.
-- `task_2_escalation_budgeting`: stresses escalation-budget discipline and discourages invalid/redundant escalations.
-- `task_3_legal_liability_path`: targets legal-hold routing behavior under high-risk and path-penalty-sensitive trajectories.
+```text
+step 1: initial_review
+signals: high risk, misleading AI says remove with high confidence
+action: escalate
 
-Each task runs `NUM_EPISODES_PER_TASK` episodes (default `5`) and computes a task grader score in `[0.0, 1.0]` from terminal rewards.
+step 2: escalation_review
+hint: remove
+action: legal_hold
 
-## 9) Grader Design
+step 3: legal_review
+audit required: possible legal retention
+action: legal_hold
 
-Task-level grader scores are derived from the same locked terminal reward:
+step 4: post_decision_audit
+final action: legal_hold
+result: terminal, strong reward for uncertainty-aware correction
+```
 
-`grade = correctness×0.45 + process×0.25 + hint×0.20 + speed×0.10`
+## Why this is challenging for LLM agents
 
-Per task:
+- The highest-confidence AI signal can still be wrong.
+- Reviewer hints are not uniformly trustworthy.
+- Fast resolution helps on easy cases but hurts on ambiguous ones.
+- Escalation is useful but limited, and repeated escalation is explicitly punished.
+- The best policy depends on trajectory logic, not just the terminal label.
+- Audit stages can reward changing your mind when new evidence appears.
 
-- episode score = terminal reward from environment (`[0, 1]` clamped by inference wrapper),
-- task score distribution = min / max / mean / std across episodes for that task,
-- overall aggregate = mean over all task episode scores.
+This makes the environment a better stress test for sequential decision quality than a simple moderation classifier wrapper.
 
-Expected behavior by task:
+## Task suite
 
-- **Routine triage**: high correctness with mostly 1-step resolution.
-- **Escalation budgeting**: avoids budget violations and redundant escalation paths.
-- **Legal liability path**: escalates to legal hold only when supported by risk + GT dynamics, avoiding path penalties.
+Three explicit benchmark task wrappers are used in `inference.py`:
 
-Inference logs keep strict benchmark stdout format:
+- `task_1_routine_triage`: easy distribution, mostly short episodes, clean routine moderation.
+- `task_2_escalation_budgeting`: medium difficulty with more zero-budget and signal-conflict cases.
+- `task_3_legal_liability_path`: hard distribution with high-risk legal-hold pressure and delayed legal escalation cases.
 
-- `[START] task=... env=... model=...`
-- `[STEP] step=... action=... reward=... done=... error=...`
-- `[END] success=... steps=... score=... rewards=...`
+Each task runs deterministic seeded episodes with different seed schedules, producing reproducible but diverse score distributions.
 
-Task summary JSON is emitted to `stderr` only.
+## HF Spaces deployment
 
-## 10) Quickstart
+The container is server-first by default:
+
+- `RUN_MODE=serve` starts `uvicorn` on `0.0.0.0:${PORT:-7860}`
+- `RUN_MODE=eval` runs `python3 inference.py`
+- `/health` returns 200 quickly for readiness checks
+- `/reset`, `/step`, `/state`, `/schema`, `/metadata`, and `/ws` are available
+
+`inference.py` never spawns a subprocess server. If no server is reachable in evaluation mode, it falls back to an in-process environment.
+
+## Quickstart
+
+Build and serve:
 
 ```bash
 docker build -t modguard-rl .
-docker run -p 8000:8000 modguard-rl
-export HF_TOKEN=your_token_here
-python inference.py
+docker run -p 7860:7860 modguard-rl
 ```
 
-## 11) API Reference
-
-| Endpoint | Method | Request | Response | Notes |
-|---|---|---|---|---|
-| `/health` | GET | none | health payload | Liveness/readiness endpoint. |
-| `/reset` | POST | optional JSON body (e.g. `{}`) | reset payload with observation | Starts new episode. |
-| `/step` | POST | `ModGuardAction` | step payload with observation/reward/done | Applies one action. |
-| `/state` | GET | none | `ModGuardState` | Returns current internal state. |
-
-## 12) Baseline Results
-
-Command used:
+Evaluation mode inside Docker:
 
 ```bash
-uv run python inference.py
+docker run --rm -e RUN_MODE=eval modguard-rl
 ```
 
-Sample counts and score ranges:
+Local evaluation against a running server:
 
-- 3 benchmark tasks (`task_1_routine_triage`, `task_2_escalation_budgeting`, `task_3_legal_liability_path`)
-- `NUM_EPISODES_PER_TASK=5` (default), 15 total episodes
-- Per-task min/max/mean/std and overall aggregate are emitted in stderr JSON at run end
-- Observed per-task ranges (local run):
-  - `task_1_routine_triage`: min `0.41`, max `0.96`, mean `0.708`, std `0.218554`
-  - `task_2_escalation_budgeting`: min `0.635`, max `0.96`, mean `0.769`, std `0.133619`
-  - `task_3_legal_liability_path`: min `0.41`, max `0.96`, mean `0.736`, std `0.197520`
-- Observed overall aggregate:
-  - min `0.41`, max `0.96`, mean/aggregate `0.737667`, std `0.188413`
+```bash
+RUN_MODE=eval python3 inference.py
+```
 
-Difficulty-stratified ranges:
+Forced in-process evaluation:
 
-- Easy: not separately logged in the default benchmark wrapper output
-- Medium: not separately logged in the default benchmark wrapper output
-- Hard: not separately logged in the default benchmark wrapper output
+```bash
+RUN_MODE=eval FORCE_INPROCESS=1 python3 inference.py
+```
 
-This section is populated with concrete observed numeric ranges from the final local validation run below.
+## API summary
 
-## 13) Novelty
+- `GET /health`: liveness and readiness
+- `POST /reset`: starts or resets an HTTP session
+- `POST /step`: advances the active HTTP session
+- `GET /state`: returns current public state for the active session
+- `GET /schema`: returns action, observation, and state schemas
+- `GET /metadata`: returns environment metadata and README content
+- `WS /ws`: OpenEnv-compatible persistent session channel
 
-What is original in ModGuard-RL versus standard moderation toy environments:
+## Judge-facing summary
 
-- staged moderation workflow with legal and escalation branches (not single-step classification),
-- explicit escalation budget guard with process-score consequences,
-- adversarial hard-mode confidence inversion plus hint calibration incentives,
-- path-penalty structure that rewards efficient, policy-consistent trajectories rather than only terminal labels.
+ModGuard-RL aims to be strong for both automated validation and human review:
 
-What is standard:
-
-- finite discrete action set,
-- episodic terminal reward scoring,
-- HTTP reset/step/state API suitable for policy learning loops.
-
-## 14) Failure Modes and Mitigations
-
-- **Budget misuse (`escalate` at zero budget):** guarded by budget-violation logic in environment, and benchmark task 2 tracks downstream score impact.
-- **Adversarial confidence/hints:** hard mode inverts confidence and removes hints; policy prompt in inference explicitly warns against blind confidence-following.
-- **Path-penalty traps:** tasks emphasize avoiding redundant escalation and incorrect legal-hold routing; process score reflects penalties.
-- **State API transient failures:** inference uses live `/state` first each step and deterministic budget fallback only when state fetch fails.
-- **Action parse drift from LLM text:** parser extracts first valid action token and falls back to `approve` with explicit error marker.
-
-## 15) Why This Matters for RL Training
-
-ModGuard-RL provides dense and behaviorally meaningful learning signals: variable episode length (1-3 steps), a four-component terminal reward (correctness/process/hint/speed), hard-mode adversarial confidence inversion, explicit escalation-budget constraints, and calibrated hint-use incentives. This structure encourages policy reasoning and robust decision strategy learning rather than shallow pattern matching.
+- strict OpenEnv schema endpoints
+- HF Spaces-ready server startup
+- sessionful HTTP and websocket support
+- reproducible multi-seed evaluation
+- adversarial and edge-case-heavy trajectories
+- reward design that encourages calibrated moderation behavior instead of shortcut policies

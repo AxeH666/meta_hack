@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ModGuard-RL — Playground</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f1412;
+      --panel: #1a221e;
+      --border: #2d3d36;
+      --text: #e8f0eb;
+      --muted: #8aa399;
+      --accent: #5ee0a3;
+      --warn: #f0c674;
+      --danger: #e06c75;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      background-image:
+        radial-gradient(ellipse 80% 50% at 20% -10%, rgba(94, 224, 163, 0.12), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 0%, rgba(240, 198, 116, 0.08), transparent);
+    }
+    header {
+      padding: 1.75rem 1.5rem 1rem;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-family: "Instrument Serif", Georgia, serif;
+      font-weight: 400;
+      font-size: clamp(1.75rem, 4vw, 2.35rem);
+      margin: 0 0 0.35rem;
+      letter-spacing: -0.02em;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 0.95rem;
+      max-width: 42rem;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 1.5rem 2.5rem;
+      display: grid;
+      gap: 1rem;
+    }
+    @media (min-width: 820px) {
+      main { grid-template-columns: 1fr 1fr; align-items: start; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.1rem 1.25rem;
+    }
+    .card h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    button {
+      font-family: inherit;
+      font-size: 0.875rem;
+      font-weight: 600;
+      padding: 0.55rem 0.9rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #24302a;
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: #2a3d34;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.primary {
+      background: rgba(94, 224, 163, 0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button.danger {
+      border-color: rgba(224, 108, 117, 0.5);
+      color: var(--danger);
+    }
+    pre {
+      margin: 0;
+      font-size: 0.72rem;
+      line-height: 1.45;
+      overflow: auto;
+      max-height: 320px;
+      padding: 0.75rem;
+      background: #121a17;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .status {
+      font-size: 0.8rem;
+      color: var(--muted);
+      min-height: 1.25rem;
+    }
+    .status.err { color: var(--danger); }
+    .status.ok { color: var(--accent); }
+    .pill {
+      display: inline-block;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: #24302a;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ModGuard-RL playground</h1>
+    <p class="sub">
+      Calls the same OpenEnv HTTP API as the benchmark client: <code>POST /reset</code>,
+      <code>POST /step</code>, <code>GET /state</code>. Uses <code>credentials: &quot;include&quot;</code> so your session cookie sticks.
+    </p>
+  </header>
+  <main>
+    <section class="card">
+      <h2>Actions</h2>
+      <div class="row">
+        <button type="button" class="primary" id="btn-reset">New case (reset)</button>
+        <button type="button" id="btn-state">Refresh /state</button>
+      </div>
+      <div class="row">
+        <button type="button" data-action="approve">Approve</button>
+        <button type="button" data-action="remove">Remove</button>
+        <button type="button" data-action="escalate">Escalate</button>
+        <button type="button" data-action="legal_hold">Legal hold</button>
+      </div>
+      <p class="status" id="status"></p>
+      <p><span class="pill" id="hint">Reset to start</span></p>
+    </section>
+    <section class="card">
+      <h2>Last response</h2>
+      <pre id="out">{}</pre>
+    </section>
+    <section class="card" style="grid-column: 1 / -1;">
+      <h2>GET /state (OpenEnv metadata)</h2>
+      <pre id="state-out">{}</pre>
+    </section>
+  </main>
+  <script>
+    const statusEl = document.getElementById("status");
+    const outEl = document.getElementById("out");
+    const stateOut = document.getElementById("state-out");
+    const hintEl = document.getElementById("hint");
+
+    function setStatus(msg, kind) {
+      statusEl.textContent = msg || "";
+      statusEl.className = "status" + (kind ? " " + kind : "");
+    }
+
+    async function api(path, options) {
+      const res = await fetch(path, {
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+      const text = await res.text();
+      let body;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        body = { raw: text };
+      }
+      if (!res.ok) {
+        const err = new Error(res.status + " " + res.statusText);
+        err.body = body;
+        throw err;
+      }
+      return body;
+    }
+
+    function show(obj) {
+      outEl.textContent = JSON.stringify(obj, null, 2);
+    }
+
+    async function refreshState() {
+      try {
+        const s = await api("/state", { method: "GET" });
+        stateOut.textContent = JSON.stringify(s, null, 2);
+        if (s && (s.episode_id != null || s.step_count != null)) {
+          hintEl.textContent =
+            "episode_id=" + (s.episode_id || "null") + " · step_count=" + (s.step_count ?? "?");
+        }
+        setStatus("Loaded /state", "ok");
+      } catch (e) {
+        stateOut.textContent = JSON.stringify(e.body || String(e), null, 2);
+        setStatus("GET /state failed", "err");
+      }
+    }
+
+    document.getElementById("btn-reset").addEventListener("click", async () => {
+      setStatus("Resetting…");
+      try {
+        const data = await api("/reset", { method: "POST", body: "{}" });
+        show(data);
+        await refreshState();
+        setStatus("Reset OK — pick an action", "ok");
+      } catch (e) {
+        show(e.body || { error: String(e) });
+        setStatus("Reset failed", "err");
+      }
+    });
+
+    document.getElementById("btn-state").addEventListener("click", () => refreshState());
+
+    document.querySelectorAll("button[data-action]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const action = btn.getAttribute("data-action");
+        setStatus("Step: " + action + "…");
+        try {
+          const payload = { action: { action } };
+          const data = await api("/step", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          show(data);
+          await refreshState();
+          setStatus("Step OK", "ok");
+        } catch (e) {
+          show(e.body || { error: String(e) });
+          setStatus("Step failed (reset first?)", "err");
+        }
+      });
+    });
+
+    refreshState();
+  </script>
+</body>
+</html>

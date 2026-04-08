@@ -38,19 +38,34 @@ class ModGuardClient:
             return ModGuardObservation.model_validate(payload.__dict__)
         return ModGuardObservation.model_validate(payload)
 
-    def reset(self, seed: int = None) -> ModGuardObservation:
-        kwargs = {"seed": seed} if seed is not None else {}
-        result = self._require_client().reset(**kwargs)
-        return self._to_observation(result.observation)
-
-    def step(self, action: ModGuardAction) -> ModGuardObservation:
-        result = self._require_client().step(action)
+    def _result_to_observation(self, result: Any) -> ModGuardObservation:
         if isinstance(result.observation, dict):
             obs_dict = dict(result.observation)
             obs_dict["done"] = result.done
             obs_dict["reward"] = result.reward
             return ModGuardObservation.model_validate(obs_dict)
-        return self._to_observation(result.observation)
+        observation = self._to_observation(result.observation)
+        observation.done = result.done
+        observation.reward = result.reward
+        return observation
+
+    def reset(
+        self,
+        seed: int | None = None,
+        difficulty: str | None = None,
+        task_name: str | None = None,
+    ) -> ModGuardObservation:
+        kwargs = {"seed": seed} if seed is not None else {}
+        if difficulty is not None:
+            kwargs["difficulty"] = difficulty
+        if task_name is not None:
+            kwargs["task_name"] = task_name
+        result = self._require_client().reset(**kwargs)
+        return self._result_to_observation(result)
+
+    def step(self, action: ModGuardAction) -> ModGuardObservation:
+        result = self._require_client().step(action)
+        return self._result_to_observation(result)
 
     def get_state(self) -> ModGuardState:
         payload = self._require_client().state()
