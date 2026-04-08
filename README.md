@@ -184,10 +184,17 @@ The container is server-first by default:
 
 ## Quickstart
 
-Build and serve:
+The hackathon runner expects the image name **`modguard-rl`** (same as `openenv.yaml` and `pyproject.toml`). Build from the **repository root**:
 
 ```bash
 docker build -t modguard-rl .
+# or: make docker-build
+# or: docker compose build   # tags modguard-rl:latest per docker-compose.yml
+```
+
+Run the server:
+
+```bash
 docker run -p 7860:7860 modguard-rl
 ```
 
@@ -208,6 +215,16 @@ Forced in-process evaluation:
 ```bash
 RUN_MODE=eval FORCE_INPROCESS=1 python3 inference.py
 ```
+
+### Phase 2 preflight (before git / Hugging Face push)
+
+Run the same checks the hackathon uses for **Phase 2** (baseline inference, reward variance, `openenv validate`, Docker `modguard-rl` + `RUN_MODE=eval`):
+
+```bash
+uv run python tests/phase2_check.py
+```
+
+Faster local run (skip Docker, fewer episodes): `PHASE2_QUICK=1 PHASE2_SKIP_DOCKER=1 uv run python tests/phase2_check.py`
 
 ## API summary
 
