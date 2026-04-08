@@ -1,11 +1,10 @@
 ---
-title: ModGuard-RL
-emoji: 🛡️
+title: ModGuard RL
+emoji: 🤖
 colorFrom: blue
-colorTo: cyan
+colorTo: purple
 sdk: docker
 app_port: 7860
-pinned: false
 ---
 
 # ModGuard-RL
